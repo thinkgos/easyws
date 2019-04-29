@@ -21,10 +21,16 @@ type SessionConfig struct {
 }
 
 type Options struct {
-	config         *SessionConfig
-	upgrader       *websocket.Upgrader
-	receiveHandler func(s *Session, t int, data []byte)
-	sendHandler    func(s *Session, t int, data []byte)
+	config            *SessionConfig
+	upgrader          *websocket.Upgrader
+	receiveHandler    func(s *Session, t int, data []byte)
+	sendHandler       func(s *Session, t int, data []byte)
+	closeHandler      func(s *Session, code int, text string) error
+	connectHandler    func(s *Session)
+	disconnectHandler func(s *Session)
+	errorHandler      func(s *Session, err error)
+	pongHandler       func(s *Session, str string)
+	pingHandler       func(s *Session, str string)
 }
 
 func NewOptions() *Options {
@@ -41,8 +47,14 @@ func NewOptions() *Options {
 			WriteBufferSize: 1024,
 			CheckOrigin:     func(r *http.Request) bool { return true },
 		},
-		receiveHandler: func(s *Session, t int, data []byte) {},
-		sendHandler:    func(s *Session, t int, data []byte) {},
+		receiveHandler:    func(s *Session, t int, data []byte) {},
+		sendHandler:       func(s *Session, t int, data []byte) {},
+		connectHandler:    func(s *Session) {},
+		disconnectHandler: func(s *Session) {},
+		closeHandler:      nil,
+		errorHandler:      func(s *Session, err error) {},
+		pongHandler:       func(s *Session, str string) {},
+		pingHandler:       func(s *Session, str string) {},
 	}
 }
 
@@ -57,5 +69,34 @@ func (this *Options) SetUpgrade(u *websocket.Upgrader) {
 func (this *Options) SetReceiveHandler(f func(s *Session, t int, data []byte)) {
 	if f != nil {
 		this.receiveHandler = f
+	}
+}
+
+func (this *Options) SetSendHandler(f func(s *Session, t int, data []byte)) {
+	if f != nil {
+		this.sendHandler = f
+	}
+}
+
+func (this *Options) SetConnectHandler(f func(s *Session)) {
+	if f != nil {
+		this.connectHandler = f
+	}
+}
+func (this *Options) SetDisonnectHandler(f func(s *Session)) {
+	if f != nil {
+		this.connectHandler = f
+	}
+}
+
+func (this *Options) SetPongHandler(f func(s *Session, str string)) {
+	if f != nil {
+		this.pongHandler = f
+	}
+}
+
+func (this *Options) SetPingHandler(f func(s *Session, str string)) {
+	if f != nil {
+		this.pingHandler = f
 	}
 }

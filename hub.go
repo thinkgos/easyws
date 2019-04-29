@@ -2,11 +2,11 @@ package easyws
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sync"
 )
 
+// 消息包
 type Message struct {
 	t    int
 	data []byte
@@ -19,7 +19,7 @@ type registry struct {
 }
 
 // 管理中心
-type hub struct {
+type Hub struct {
 	sessions  map[*Session]struct{}
 	registry  chan registry
 	broadcast chan *Message
@@ -29,25 +29,36 @@ type hub struct {
 	option    *Options
 }
 
-// 管理中心
-func New(op *Options) *hub {
-	h := &hub{
+// 创建管理中心
+func New(op ...*Options) *Hub {
+	var opt *Options
+	if len(op) > 0 {
+		opt = op[0]
+	} else {
+		opt = NewOptions()
+	}
+	return &Hub{
 		sessions:  make(map[*Session]struct{}),
 		registry:  make(chan registry),
-		broadcast: make(chan *Message, op.config.MessageBufferSize),
-		option:    op,
+		broadcast: make(chan *Message, opt.config.MessageBufferSize),
+		option:    opt,
 	}
-	h.run(context.Background())
+}
+
+// 创建管理中心并运行
+func NewWithRun(op ...*Options) *Hub {
+	h := New(op...)
+	go h.Run(context.Background())
 	return h
 }
 
 // 管理会话
-func (this *hub) manageSession(isRegister bool, ses *Session) {
+func (this *Hub) manageSession(isRegister bool, ses *Session) {
 	this.registry <- registry{isRegister, ses}
 }
 
 // 运行管理中心
-func (this *hub) run(ctx context.Context) {
+func (this *Hub) Run(ctx context.Context) {
 	var lctx context.Context
 
 	lctx, this.cancel = context.WithCancel(ctx)
@@ -67,17 +78,17 @@ func (this *hub) run(ctx context.Context) {
 		case m := <-this.broadcast:
 			this.mu.Lock()
 			for sess := range this.sessions {
-				_ = sess.WriteMessage(m.t, m.data)
+				sess.WriteMessage(m.t, m.data)
 			}
 			this.mu.Unlock()
 
 		case <-lctx.Done():
 			this.mu.Lock()
-			for s := range this.sessions {
+			this.started = false           // 如果外面cancel,要先置位
+			for s := range this.sessions { // 删除所有客户端
 				s.Close()
 			}
 			this.sessions = make(map[*Session]struct{})
-			this.started = false
 			this.mu.Unlock()
 			return
 		}
@@ -85,20 +96,24 @@ func (this *hub) run(ctx context.Context) {
 }
 
 // 广播消息
-func (this *hub) BroadCast(t int, data []byte) error {
+func (this *Hub) BroadCast(t int, data []byte) error {
 	if this.IsClosed() {
-		return errors.New("hub is closed")
+		return ErrHubClosed
 	}
 
-	this.broadcast <- &Message{t, data}
+	select {
+	case this.broadcast <- &Message{t, data}:
+	default:
+		return ErrHubBufferFull
+	}
 	return nil
 }
 
 // 关闭
-func (this *hub) Close() {
+func (this *Hub) Close() {
 	this.mu.Lock()
-	if this.started && this.cancel != nil {
-		this.started = false
+	this.started = false
+	if this.cancel != nil {
 		this.mu.Unlock()
 		this.cancel()
 		return
@@ -107,7 +122,7 @@ func (this *hub) Close() {
 }
 
 // 判断是否关闭
-func (this *hub) IsClosed() bool {
+func (this *Hub) IsClosed() bool {
 	this.mu.Lock()
 	b := this.started
 	this.mu.Unlock()
@@ -115,15 +130,18 @@ func (this *hub) IsClosed() bool {
 }
 
 // 升级成websocket并运行起来
-func (this *hub) RunWithUpgrade(w http.ResponseWriter, r *http.Request) error {
+func (this *Hub) RunWithUpgrade(w http.ResponseWriter, r *http.Request) error {
 	if this.IsClosed() {
-		return errors.New("hub is closed")
+		return ErrHubClosed
 	}
-
-	conn, err := this.option.upgrader.Upgrade(w, r, nil)
+	conn, err := this.option.upgrader.Upgrade(w, r, w.Header())
 	if err != nil {
 		return err
 	}
-	newSession(this, conn, this.option.config).run(context.TODO())
+
+	sess := NewSession(this, conn, this.option.config)
+	this.option.connectHandler(sess)
+	sess.run()
+	this.option.disconnectHandler(sess)
 	return nil
 }

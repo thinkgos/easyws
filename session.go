@@ -2,14 +2,13 @@ package easyws
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/astaxie/beego/logs"
 	"github.com/gorilla/websocket"
+	"github.com/pkg/errors"
 )
 
 type Session struct {
@@ -19,28 +18,38 @@ type Session struct {
 	alive    int32
 	mu       sync.Mutex
 	cancel   context.CancelFunc
-	hub      *hub
+	Hub      *Hub
 }
 
 // 创建一个会话实例
-func newSession(h *hub, conn *websocket.Conn, cfg *SessionConfig) *Session {
+func NewSession(h *Hub, conn *websocket.Conn, cfg *SessionConfig) *Session {
 	return &Session{
 		conn:     conn,
-		outBound: make(chan *Message, cfg.MaxMessageSize),
-		hub:      h,
+		outBound: make(chan *Message, cfg.MessageBufferSize),
+		Hub:      h,
 	}
+}
+
+// 本地址
+func (this *Session) LocalAddr() net.Addr {
+	return this.conn.LocalAddr()
+}
+
+//远程地址
+func (this *Session) RemoteAddr() net.Addr {
+	return this.conn.RemoteAddr()
 }
 
 // 写消息
 func (this *Session) WriteMessage(messageType int, data []byte) error {
 	if this.IsClosed() {
-		return errors.New("session is closed")
+		return ErrSessionClosed
 	}
 
 	select {
 	case this.outBound <- &Message{messageType, data}:
 	default:
-		return errors.New("session buffer is full")
+		return ErrSessionBufferFull
 	}
 
 	return nil
@@ -49,21 +58,20 @@ func (this *Session) WriteMessage(messageType int, data []byte) error {
 //写控制消息 (CloseMessage, PingMessage and PongMessag.)
 func (this *Session) WriteControl(messageType int, data []byte) error {
 	if this.IsClosed() {
-		return errors.New("session is closed")
+		return ErrSessionClosed
 	}
 
 	return this.conn.WriteControl(messageType, data,
-		time.Now().Add(this.hub.option.config.WriteWait))
+		time.Now().Add(this.Hub.option.config.WriteWait))
 }
 
 //
 func (this *Session) writePump(ctx context.Context) {
 	var retries int
 
-	cfg := this.hub.option.config
+	cfg := this.Hub.option.config
 	monTick := time.NewTicker(cfg.KeepAlive * time.Duration(cfg.Radtio) / 100)
 	defer func() {
-		logs.Error("Run write: closed")
 		monTick.Stop()
 		this.conn.Close()
 	}()
@@ -78,12 +86,16 @@ func (this *Session) writePump(ctx context.Context) {
 				return
 			}
 
-			err := this.conn.WriteMessage(msg.t, msg.data)
-			if err != nil {
-				logs.Error("Run write: ", err)
+			if msg.t == websocket.CloseMessage {
 				return
 			}
-			this.hub.option.sendHandler(this, msg.t, msg.data)
+
+			err := this.conn.WriteMessage(msg.t, msg.data)
+			if err != nil {
+				this.Hub.option.errorHandler(this, errors.Wrap(err, "Run write"))
+				return
+			}
+			this.Hub.option.sendHandler(this, msg.t, msg.data)
 		case <-monTick.C:
 			if atomic.AddInt32(&this.alive, 1) > 1 {
 				if retries++; retries > 3 {
@@ -92,7 +104,7 @@ func (this *Session) writePump(ctx context.Context) {
 				err := this.conn.WriteControl(websocket.PingMessage, []byte{},
 					time.Now().Add(cfg.WriteWait))
 				if err != nil {
-					logs.Error("run Write: ", err)
+					this.Hub.option.errorHandler(this, errors.Wrap(err, "Run write"))
 					return
 				}
 			} else {
@@ -103,20 +115,23 @@ func (this *Session) writePump(ctx context.Context) {
 }
 
 //
-func (this *Session) run(ctx context.Context) {
+func (this *Session) run() {
 	var lctx context.Context
 
-	this.hub.manageSession(true, this)
-	lctx, this.cancel = context.WithCancel(ctx)
+	this.mu.Lock()
+	this.started = true
+	this.mu.Unlock()
+	this.Hub.manageSession(true, this)
+	lctx, this.cancel = context.WithCancel(context.Background())
 	go this.writePump(lctx)
 
-	cfg := this.hub.option.config
+	cfg := this.Hub.option.config
 	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * (tuple + 1)
 
-	this.conn.SetPongHandler(func(string) error {
+	this.conn.SetPongHandler(func(message string) error {
 		atomic.StoreInt32(&this.alive, 0)
 		this.conn.SetReadDeadline(time.Now().Add(readWait))
-		logs.Debug("%s pong", this.conn.RemoteAddr().String())
+		this.Hub.option.pongHandler(this, message)
 		return nil
 	})
 
@@ -126,17 +141,19 @@ func (this *Session) run(ctx context.Context) {
 		err := this.conn.WriteControl(websocket.PongMessage,
 			[]byte(message), time.Now().Add(cfg.WriteWait))
 		if err != nil {
-			if err == websocket.ErrCloseSent {
-				// see default handler
-			} else if e, ok := err.(net.Error); ok && e.Temporary() {
-				// see default handler
-			} else {
+			if e, ok := err.(net.Error); !(ok && e.Temporary() ||
+				err == websocket.ErrCloseSent) {
 				return err
 			}
 		}
-		logs.Debug("%s ping", this.conn.RemoteAddr().String())
+		this.Hub.option.pingHandler(this, message)
 		return nil
 	})
+	if this.Hub.option.closeHandler != nil {
+		this.conn.SetCloseHandler(func(code int, text string) error {
+			return this.Hub.option.closeHandler(this, code, text)
+		})
+	}
 
 	if cfg.MaxMessageSize > 0 {
 		this.conn.SetReadLimit(cfg.MaxMessageSize)
@@ -145,22 +162,25 @@ func (this *Session) run(ctx context.Context) {
 	for {
 		t, data, err := this.conn.ReadMessage()
 		if err != nil {
-			logs.Error("Run Read: ", err)
+			this.Hub.option.errorHandler(this, errors.Wrap(err, "Run read"))
 			break
 		}
-		this.hub.option.receiveHandler(this, t, data)
+		atomic.StoreInt32(&this.alive, 0)
+		this.Hub.option.receiveHandler(this, t, data)
 	}
-	if !this.hub.IsClosed() {
-		this.hub.manageSession(false, this)
+
+	if !this.Hub.IsClosed() {
+		this.Hub.manageSession(false, this)
 	}
 	this.Close()
 }
 
 // 关闭
 func (this *Session) Close() {
+	this.conn.Close()
 	this.mu.Lock()
-	if this.started && this.cancel != nil {
-		this.started = false
+	this.started = false
+	if this.cancel != nil {
 		this.mu.Unlock()
 		this.cancel()
 		return
