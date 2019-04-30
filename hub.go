@@ -130,7 +130,7 @@ func (this *Hub) IsClosed() bool {
 }
 
 // RunWithUpgrade 升级成websocket并运行起来
-func (this *Hub) RunWithUpgrade(w http.ResponseWriter, r *http.Request) error {
+func (this *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
 	if this.IsClosed() {
 		return ErrHubClosed
 	}
@@ -139,7 +139,13 @@ func (this *Hub) RunWithUpgrade(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	sess := NewSession(this, conn, this.option.config)
+	sess := &Session{
+		Request:  r,
+		conn:     conn,
+		outBound: make(chan *message, this.option.config.MessageBufferSize),
+		Hub:      this,
+	}
+
 	this.option.connectHandler(sess)
 	sess.run()
 	this.option.disconnectHandler(sess)

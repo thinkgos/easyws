@@ -3,6 +3,7 @@ package easyws
 import (
 	"context"
 	"net"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -12,21 +13,13 @@ import (
 
 // Session 会话
 type Session struct {
+	Request  *http.Request
 	conn     *websocket.Conn
 	outBound chan *message
 	started  int32
 	alive    int32
 	cancel   context.CancelFunc
 	Hub      *Hub
-}
-
-// NewSession 创建一个会话实例
-func NewSession(h *Hub, conn *websocket.Conn, cfg *SessionConfig) *Session {
-	return &Session{
-		conn:     conn,
-		outBound: make(chan *message, cfg.MessageBufferSize),
-		Hub:      h,
-	}
 }
 
 // LocalAddr 获取本地址
