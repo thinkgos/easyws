@@ -11,9 +11,10 @@ import (
 	"github.com/pkg/errors"
 )
 
+// Session 会话
 type Session struct {
 	conn     *websocket.Conn
-	outBound chan *Message
+	outBound chan *message
 	started  bool
 	alive    int32
 	mu       sync.Mutex
@@ -21,33 +22,33 @@ type Session struct {
 	Hub      *Hub
 }
 
-// 创建一个会话实例
+// NewSession 创建一个会话实例
 func NewSession(h *Hub, conn *websocket.Conn, cfg *SessionConfig) *Session {
 	return &Session{
 		conn:     conn,
-		outBound: make(chan *Message, cfg.MessageBufferSize),
+		outBound: make(chan *message, cfg.MessageBufferSize),
 		Hub:      h,
 	}
 }
 
-// 本地址
+// LocalAddr 获取本地址
 func (this *Session) LocalAddr() net.Addr {
 	return this.conn.LocalAddr()
 }
 
-//远程地址
+// RemoteAddr 获取远程地址
 func (this *Session) RemoteAddr() net.Addr {
 	return this.conn.RemoteAddr()
 }
 
-// 写消息
+// WriteMessage 写消息
 func (this *Session) WriteMessage(messageType int, data []byte) error {
 	if this.IsClosed() {
 		return ErrSessionClosed
 	}
 
 	select {
-	case this.outBound <- &Message{messageType, data}:
+	case this.outBound <- &message{messageType, data}:
 	default:
 		return ErrSessionBufferFull
 	}
@@ -55,7 +56,7 @@ func (this *Session) WriteMessage(messageType int, data []byte) error {
 	return nil
 }
 
-//写控制消息 (CloseMessage, PingMessage and PongMessag.)
+// WriteControl 写控制消息 (CloseMessage, PingMessage and PongMessag.)
 func (this *Session) WriteControl(messageType int, data []byte) error {
 	if this.IsClosed() {
 		return ErrSessionClosed
@@ -65,7 +66,7 @@ func (this *Session) WriteControl(messageType int, data []byte) error {
 		time.Now().Add(this.Hub.option.config.WriteWait))
 }
 
-//
+// writePump
 func (this *Session) writePump(ctx context.Context) {
 	var retries int
 
@@ -114,7 +115,7 @@ func (this *Session) writePump(ctx context.Context) {
 	}
 }
 
-//
+// run
 func (this *Session) run() {
 	var lctx context.Context
 
@@ -175,7 +176,7 @@ func (this *Session) run() {
 	this.Close()
 }
 
-// 关闭
+// Close 关闭会话
 func (this *Session) Close() {
 	this.conn.Close()
 	this.mu.Lock()
@@ -188,7 +189,7 @@ func (this *Session) Close() {
 	this.mu.Unlock()
 }
 
-// 判断是否关闭
+// IsClosed 判断会话是否关闭
 func (this *Session) IsClosed() bool {
 	this.mu.Lock()
 	b := this.started

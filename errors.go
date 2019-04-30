@@ -2,6 +2,7 @@ package easyws
 
 import "errors"
 
+// 错误返回
 var (
 	ErrHubClosed         = errors.New("hub is closed")
 	ErrHubBufferFull     = errors.New("hub is closed")

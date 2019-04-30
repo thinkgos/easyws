@@ -6,8 +6,8 @@ import (
 	"sync"
 )
 
-// 消息包
-type Message struct {
+// message 消息包
+type message struct {
 	t    int
 	data []byte
 }
@@ -18,18 +18,18 @@ type registry struct {
 	sess       *Session
 }
 
-// 管理中心
+// Hub 管理中心
 type Hub struct {
 	sessions  map[*Session]struct{}
 	registry  chan registry
-	broadcast chan *Message
+	broadcast chan *message
 	started   bool
 	mu        sync.Mutex
 	cancel    context.CancelFunc
 	option    *Options
 }
 
-// 创建管理中心
+// New 创建管理中心
 func New(op ...*Options) *Hub {
 	var opt *Options
 	if len(op) > 0 {
@@ -40,24 +40,24 @@ func New(op ...*Options) *Hub {
 	return &Hub{
 		sessions:  make(map[*Session]struct{}),
 		registry:  make(chan registry),
-		broadcast: make(chan *Message, opt.config.MessageBufferSize),
+		broadcast: make(chan *message, opt.config.MessageBufferSize),
 		option:    opt,
 	}
 }
 
-// 创建管理中心并运行
+// NewWithRun 创建管理中心并运行
 func NewWithRun(op ...*Options) *Hub {
 	h := New(op...)
 	go h.Run(context.Background())
 	return h
 }
 
-// 管理会话
+// manageSession 管理会话
 func (this *Hub) manageSession(isRegister bool, ses *Session) {
 	this.registry <- registry{isRegister, ses}
 }
 
-// 运行管理中心
+// Run 运行管理中心
 func (this *Hub) Run(ctx context.Context) {
 	var lctx context.Context
 
@@ -95,21 +95,21 @@ func (this *Hub) Run(ctx context.Context) {
 	}
 }
 
-// 广播消息
+// BroadCast 广播消息
 func (this *Hub) BroadCast(t int, data []byte) error {
 	if this.IsClosed() {
 		return ErrHubClosed
 	}
 
 	select {
-	case this.broadcast <- &Message{t, data}:
+	case this.broadcast <- &message{t, data}:
 	default:
 		return ErrHubBufferFull
 	}
 	return nil
 }
 
-// 关闭
+// Close 关闭
 func (this *Hub) Close() {
 	this.mu.Lock()
 	this.started = false
@@ -121,7 +121,7 @@ func (this *Hub) Close() {
 	this.mu.Unlock()
 }
 
-// 判断是否关闭
+// IsClosed 判断是否关闭
 func (this *Hub) IsClosed() bool {
 	this.mu.Lock()
 	b := this.started
@@ -129,7 +129,7 @@ func (this *Hub) IsClosed() bool {
 	return !b
 }
 
-// 升级成websocket并运行起来
+// RunWithUpgrade 升级成websocket并运行起来
 func (this *Hub) RunWithUpgrade(w http.ResponseWriter, r *http.Request) error {
 	if this.IsClosed() {
 		return ErrHubClosed
