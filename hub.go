@@ -2,9 +2,18 @@ package easyws
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"sync/atomic"
+)
+
+// 错误返回
+var (
+	ErrHubClosed         = errors.New("hub is closed")
+	ErrHubBufferFull     = errors.New("hub is closed")
+	ErrSessionClosed     = errors.New("session is closed")
+	ErrSessionBufferFull = errors.New("session buffer is full")
 )
 
 // message 消息包
@@ -70,7 +79,7 @@ func (this *Hub) Run(ctx context.Context) {
 			this.mu.Lock()
 			if reg.isRegister {
 				this.sessions[reg.sess] = struct{}{}
-			} else if _, ok := this.sessions[reg.sess]; ok {
+			} else {
 				delete(this.sessions, reg.sess)
 			}
 			this.mu.Unlock()

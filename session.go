@@ -123,7 +123,7 @@ func (this *Session) run() {
 	go this.writePump(lctx)
 
 	cfg := this.Hub.option.config
-	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * (tuple + 1)
+	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * 4
 
 	this.conn.SetPongHandler(func(message string) error {
 		atomic.StoreInt32(&this.alive, 0)

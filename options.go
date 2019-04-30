@@ -7,10 +7,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const (
-	tuple = 3
-)
-
 // SessionConfig 会话配置
 type SessionConfig struct {
 	WriteWait         time.Duration // 写超时时间
