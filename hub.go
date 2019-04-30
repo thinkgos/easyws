@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sync"
+	"sync/atomic"
 )
 
 // message 消息包
@@ -23,7 +24,7 @@ type Hub struct {
 	sessions  map[*Session]struct{}
 	registry  chan registry
 	broadcast chan *message
-	started   bool
+	started   int32
 	mu        sync.Mutex
 	cancel    context.CancelFunc
 	option    *Options
@@ -62,9 +63,7 @@ func (this *Hub) Run(ctx context.Context) {
 	var lctx context.Context
 
 	lctx, this.cancel = context.WithCancel(ctx)
-	this.mu.Lock()
-	this.started = true
-	this.mu.Unlock()
+	atomic.StoreInt32(&this.started, 1)
 	for {
 		select {
 		case reg := <-this.registry:
@@ -83,8 +82,8 @@ func (this *Hub) Run(ctx context.Context) {
 			this.mu.Unlock()
 
 		case <-lctx.Done():
+			atomic.StoreInt32(&this.started, 0) // 如果外面cancel,要选置位关闭
 			this.mu.Lock()
-			this.started = false           // 如果外面cancel,要先置位
 			for s := range this.sessions { // 删除所有客户端
 				s.Close()
 			}
@@ -111,22 +110,14 @@ func (this *Hub) BroadCast(t int, data []byte) error {
 
 // Close 关闭
 func (this *Hub) Close() {
-	this.mu.Lock()
-	this.started = false
-	if this.cancel != nil {
-		this.mu.Unlock()
+	if atomic.CompareAndSwapInt32(&this.started, 1, 0) {
 		this.cancel()
-		return
 	}
-	this.mu.Unlock()
 }
 
 // IsClosed 判断是否关闭
 func (this *Hub) IsClosed() bool {
-	this.mu.Lock()
-	b := this.started
-	this.mu.Unlock()
-	return !b
+	return atomic.LoadInt32(&this.started) == 0
 }
 
 // RunWithUpgrade 升级成websocket并运行起来

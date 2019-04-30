@@ -3,7 +3,6 @@ package easyws
 import (
 	"context"
 	"net"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,9 +14,8 @@ import (
 type Session struct {
 	conn     *websocket.Conn
 	outBound chan *message
-	started  bool
+	started  int32
 	alive    int32
-	mu       sync.Mutex
 	cancel   context.CancelFunc
 	Hub      *Hub
 }
@@ -119,11 +117,9 @@ func (this *Session) writePump(ctx context.Context) {
 func (this *Session) run() {
 	var lctx context.Context
 
-	this.mu.Lock()
-	this.started = true
-	this.mu.Unlock()
-	this.Hub.manageSession(true, this)
 	lctx, this.cancel = context.WithCancel(context.Background())
+	atomic.StoreInt32(&this.started, 1)
+	this.Hub.manageSession(true, this)
 	go this.writePump(lctx)
 
 	cfg := this.Hub.option.config
@@ -179,20 +175,12 @@ func (this *Session) run() {
 // Close 关闭会话
 func (this *Session) Close() {
 	this.conn.Close()
-	this.mu.Lock()
-	this.started = false
-	if this.cancel != nil {
-		this.mu.Unlock()
+	if atomic.CompareAndSwapInt32(&this.started, 1, 0) {
 		this.cancel()
-		return
 	}
-	this.mu.Unlock()
 }
 
 // IsClosed 判断会话是否关闭
 func (this *Session) IsClosed() bool {
-	this.mu.Lock()
-	b := this.started
-	this.mu.Unlock()
-	return !b
+	return atomic.LoadInt32(&this.started) == 0
 }
