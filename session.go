@@ -16,8 +16,8 @@ type Session struct {
 	Request  *http.Request
 	conn     *websocket.Conn
 	outBound chan *message
-	started  int32
 	alive    int32
+	ctx      context.Context
 	cancel   context.CancelFunc
 	Hub      *Hub
 }
@@ -58,7 +58,7 @@ func (this *Session) WriteControl(messageType int, data []byte) error {
 }
 
 // writePump
-func (this *Session) writePump(ctx context.Context) {
+func (this *Session) writePump() {
 	var retries int
 
 	cfg := this.Hub.option.config
@@ -69,7 +69,7 @@ func (this *Session) writePump(ctx context.Context) {
 	}()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-this.ctx.Done():
 			return
 		case msg, ok := <-this.outBound:
 			this.conn.SetWriteDeadline(time.Now().Add(cfg.WriteWait))
@@ -108,12 +108,8 @@ func (this *Session) writePump(ctx context.Context) {
 
 // run
 func (this *Session) run() {
-	var lctx context.Context
-
-	lctx, this.cancel = context.WithCancel(context.Background())
-	atomic.StoreInt32(&this.started, 1)
 	this.Hub.manageSession(true, this)
-	go this.writePump(lctx)
+	go this.writePump()
 
 	cfg := this.Hub.option.config
 	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * 4
@@ -168,12 +164,10 @@ func (this *Session) run() {
 // Close 关闭会话
 func (this *Session) Close() {
 	this.conn.Close()
-	if atomic.CompareAndSwapInt32(&this.started, 1, 0) {
-		this.cancel()
-	}
+	this.cancel()
 }
 
 // IsClosed 判断会话是否关闭
 func (this *Session) IsClosed() bool {
-	return atomic.LoadInt32(&this.started) == 0
+	return this.ctx.Err() != nil
 }

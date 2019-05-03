@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"sync"
-	"sync/atomic"
 )
 
 // 错误返回
@@ -33,8 +32,8 @@ type Hub struct {
 	sessions  map[*Session]struct{}
 	registry  chan registry
 	broadcast chan *message
-	started   int32
 	mu        sync.Mutex
+	ctx       context.Context
 	cancel    context.CancelFunc
 	option    *Options
 }
@@ -47,18 +46,21 @@ func New(op ...*Options) *Hub {
 	} else {
 		opt = NewOptions()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Hub{
 		sessions:  make(map[*Session]struct{}),
 		registry:  make(chan registry),
 		broadcast: make(chan *message, opt.config.MessageBufferSize),
 		option:    opt,
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 }
 
 // NewWithRun 创建管理中心并运行
 func NewWithRun(op ...*Options) *Hub {
 	h := New(op...)
-	go h.Run(context.Background())
+	go h.Run(context.TODO())
 	return h
 }
 
@@ -69,10 +71,6 @@ func (this *Hub) manageSession(isRegister bool, ses *Session) {
 
 // Run 运行管理中心
 func (this *Hub) Run(ctx context.Context) {
-	var lctx context.Context
-
-	lctx, this.cancel = context.WithCancel(ctx)
-	atomic.StoreInt32(&this.started, 1)
 	for {
 		select {
 		case reg := <-this.registry:
@@ -89,13 +87,10 @@ func (this *Hub) Run(ctx context.Context) {
 				sess.WriteMessage(m.t, m.data)
 			}
 			this.mu.Unlock()
-
-		case <-lctx.Done():
-			atomic.StoreInt32(&this.started, 0) // 如果外面cancel,要选置位关闭
+		case <-ctx.Done():
+			this.cancel() // local cancel make itself clean resourse
+		case <-this.ctx.Done():
 			this.mu.Lock()
-			for s := range this.sessions { // 删除所有客户端
-				s.Close()
-			}
 			this.sessions = make(map[*Session]struct{})
 			this.mu.Unlock()
 			return
@@ -119,17 +114,15 @@ func (this *Hub) BroadCast(t int, data []byte) error {
 
 // Close 关闭
 func (this *Hub) Close() {
-	if atomic.CompareAndSwapInt32(&this.started, 1, 0) {
-		this.cancel()
-	}
+	this.cancel()
 }
 
 // IsClosed 判断是否关闭
 func (this *Hub) IsClosed() bool {
-	return atomic.LoadInt32(&this.started) == 0
+	return this.ctx.Err() != nil
 }
 
-// RunWithUpgrade 升级成websocket并运行起来
+// UpgradeWithRun 升级成websocket并运行起来
 func (this *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
 	if this.IsClosed() {
 		return ErrHubClosed
@@ -145,6 +138,7 @@ func (this *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
 		outBound: make(chan *message, this.option.config.MessageBufferSize),
 		Hub:      this,
 	}
+	sess.ctx, sess.cancel = context.WithCancel(this.ctx)
 
 	this.option.connectHandler(sess)
 	sess.run()
