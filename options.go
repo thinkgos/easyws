@@ -90,7 +90,7 @@ func (this *Options) SetConnectHandler(f func(s *Session)) {
 // SetDisonnectHandler 设置断开连接回调
 func (this *Options) SetDisonnectHandler(f func(s *Session)) {
 	if f != nil {
-		this.connectHandler = f
+		this.disconnectHandler = f
 	}
 }
 

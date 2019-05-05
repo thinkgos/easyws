@@ -17,7 +17,7 @@ type Session struct {
 	conn     *websocket.Conn
 	outBound chan *message
 	alive    int32
-	ctx      context.Context
+	lctx     context.Context
 	cancel   context.CancelFunc
 	Hub      *Hub
 }
@@ -69,7 +69,7 @@ func (this *Session) writePump() {
 	}()
 	for {
 		select {
-		case <-this.ctx.Done():
+		case <-this.lctx.Done():
 			return
 		case msg, ok := <-this.outBound:
 			this.conn.SetWriteDeadline(time.Now().Add(cfg.WriteWait))
@@ -108,7 +108,6 @@ func (this *Session) writePump() {
 
 // run
 func (this *Session) run() {
-	this.Hub.manageSession(true, this)
 	go this.writePump()
 
 	cfg := this.Hub.option.config
@@ -155,9 +154,6 @@ func (this *Session) run() {
 		this.Hub.option.receiveHandler(this, t, data)
 	}
 
-	if !this.Hub.IsClosed() {
-		this.Hub.manageSession(false, this)
-	}
 	this.Close()
 }
 
@@ -169,5 +165,5 @@ func (this *Session) Close() {
 
 // IsClosed 判断会话是否关闭
 func (this *Session) IsClosed() bool {
-	return this.ctx.Err() != nil
+	return this.lctx.Err() != nil
 }

@@ -33,7 +33,7 @@ type Hub struct {
 	registry  chan registry
 	broadcast chan *message
 	mu        sync.Mutex
-	ctx       context.Context
+	lctx      context.Context
 	cancel    context.CancelFunc
 	option    *Options
 }
@@ -52,7 +52,7 @@ func New(op ...*Options) *Hub {
 		registry:  make(chan registry),
 		broadcast: make(chan *message, opt.config.MessageBufferSize),
 		option:    opt,
-		ctx:       ctx,
+		lctx:      ctx,
 		cancel:    cancel,
 	}
 }
@@ -71,6 +71,12 @@ func (this *Hub) manageSession(isRegister bool, ses *Session) {
 
 // Run 运行管理中心
 func (this *Hub) Run(ctx context.Context) {
+	defer func() {
+		this.mu.Lock()
+		this.sessions = make(map[*Session]struct{})
+		this.mu.Unlock()
+	}()
+
 	for {
 		select {
 		case reg := <-this.registry:
@@ -88,11 +94,9 @@ func (this *Hub) Run(ctx context.Context) {
 			}
 			this.mu.Unlock()
 		case <-ctx.Done():
-			this.cancel() // local cancel make itself clean resourse
-		case <-this.ctx.Done():
-			this.mu.Lock()
-			this.sessions = make(map[*Session]struct{})
-			this.mu.Unlock()
+			this.cancel() // local cancel mark it closed
+			return
+		case <-this.lctx.Done():
 			return
 		}
 	}
@@ -112,6 +116,14 @@ func (this *Hub) BroadCast(t int, data []byte) error {
 	return nil
 }
 
+// SessionLen 返回客户端会话的数量
+func (this *Hub) SessionLen() int {
+	this.mu.Lock()
+	l := len(this.sessions)
+	this.mu.Unlock()
+	return l
+}
+
 // Close 关闭
 func (this *Hub) Close() {
 	this.cancel()
@@ -119,7 +131,7 @@ func (this *Hub) Close() {
 
 // IsClosed 判断是否关闭
 func (this *Hub) IsClosed() bool {
-	return this.ctx.Err() != nil
+	return this.lctx.Err() != nil
 }
 
 // UpgradeWithRun 升级成websocket并运行起来
@@ -138,10 +150,14 @@ func (this *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
 		outBound: make(chan *message, this.option.config.MessageBufferSize),
 		Hub:      this,
 	}
-	sess.ctx, sess.cancel = context.WithCancel(this.ctx)
+	sess.lctx, sess.cancel = context.WithCancel(this.lctx)
 
+	this.manageSession(true, sess)
 	this.option.connectHandler(sess)
 	sess.run()
+	if !this.IsClosed() {
+		this.manageSession(false, sess)
+	}
 	this.option.disconnectHandler(sess)
 	return nil
 }
