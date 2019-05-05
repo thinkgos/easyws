@@ -10,7 +10,7 @@ import (
 // 错误返回
 var (
 	ErrHubClosed         = errors.New("hub is closed")
-	ErrHubBufferFull     = errors.New("hub is closed")
+	ErrHubBufferFull     = errors.New("hub buffer is full")
 	ErrSessionClosed     = errors.New("session is closed")
 	ErrSessionBufferFull = errors.New("session buffer is full")
 )
