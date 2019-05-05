@@ -33,13 +33,23 @@ func (this *Session) RemoteAddr() net.Addr {
 }
 
 // WriteMessage 写消息
-func (this *Session) WriteMessage(messageType int, data []byte) error {
+func (this *Session) WriteMessage(messageType int, data interface{}) error {
+	var py []byte
+
 	if this.IsClosed() {
 		return ErrSessionClosed
 	}
+	switch data.(type) {
+	case string:
+		py = []byte(data.(string))
+	case []byte:
+		py = data.([]byte)
+	default:
+		return errors.New("Unknown data type")
+	}
 
 	select {
-	case this.outBound <- &message{messageType, data}:
+	case this.outBound <- &message{messageType, py}:
 	default:
 		return ErrSessionBufferFull
 	}
@@ -48,12 +58,21 @@ func (this *Session) WriteMessage(messageType int, data []byte) error {
 }
 
 // WriteControl 写控制消息 (CloseMessage, PingMessage and PongMessag.)
-func (this *Session) WriteControl(messageType int, data []byte) error {
+func (this *Session) WriteControl(messageType int, data interface{}) error {
+	var py []byte
+
 	if this.IsClosed() {
 		return ErrSessionClosed
 	}
-
-	return this.conn.WriteControl(messageType, data,
+	switch data.(type) {
+	case string:
+		py = []byte(data.(string))
+	case []byte:
+		py = data.([]byte)
+	default:
+		return errors.New("Unknown data type")
+	}
+	return this.conn.WriteControl(messageType, py,
 		time.Now().Add(this.Hub.option.config.WriteWait))
 }
 

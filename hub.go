@@ -103,13 +103,23 @@ func (this *Hub) Run(ctx context.Context) {
 }
 
 // BroadCast 广播消息
-func (this *Hub) BroadCast(t int, data []byte) error {
+func (this *Hub) BroadCast(t int, data interface{}) error {
+	var py []byte
+
 	if this.IsClosed() {
 		return ErrHubClosed
 	}
+	switch data.(type) {
+	case string:
+		py = []byte(data.(string))
+	case []byte:
+		py = data.([]byte)
+	default:
+		return errors.New("Unknown data type")
+	}
 
 	select {
-	case this.broadcast <- &message{t, data}:
+	case this.broadcast <- &message{t, py}:
 	default:
 		return ErrHubBufferFull
 	}
