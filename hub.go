@@ -21,20 +21,15 @@ type message struct {
 	data []byte
 }
 
-// 登记处
-type registry struct {
-	isRegister bool
-	sess       *Session
-}
-
 // Hub 管理中心
 type Hub struct {
-	sessions  map[*Session]struct{}
-	registry  chan registry
-	broadcast chan *message
-	mu        sync.Mutex
-	lctx      context.Context
-	cancel    context.CancelFunc
+	sessions   map[*Session]struct{}
+	registry   chan *Session
+	unRegistry chan *Session
+	broadcast  chan *message
+	mu         sync.Mutex
+	lctx       context.Context
+	cancel     context.CancelFunc
 	config
 }
 
@@ -42,12 +37,12 @@ type Hub struct {
 func New(opts ...Option) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := &Hub{
-		sessions: make(map[*Session]struct{}),
-		registry: make(chan registry),
-
-		config: defaultConfig(),
-		lctx:   ctx,
-		cancel: cancel,
+		sessions:   make(map[*Session]struct{}),
+		registry:   make(chan *Session),
+		unRegistry: make(chan *Session),
+		config:     defaultConfig(),
+		lctx:       ctx,
+		cancel:     cancel,
 	}
 
 	for _, opt := range opts {
@@ -65,9 +60,12 @@ func NewWithRun(opt ...Option) *Hub {
 	return h
 }
 
-// manageSession 管理会话
-func (sf *Hub) manageSession(isRegister bool, ses *Session) {
-	sf.registry <- registry{isRegister, ses}
+func (sf *Hub) Register(sess *Session) {
+	sf.registry <- sess
+}
+
+func (sf *Hub) UnRegister(sess *Session) {
+	sf.unRegistry <- sess
 }
 
 // Run 运行管理中心
@@ -80,13 +78,13 @@ func (sf *Hub) Run(ctx context.Context) {
 
 	for {
 		select {
-		case reg := <-sf.registry:
+		case sess := <-sf.registry:
 			sf.mu.Lock()
-			if reg.isRegister {
-				sf.sessions[reg.sess] = struct{}{}
-			} else {
-				delete(sf.sessions, reg.sess)
-			}
+			sf.sessions[sess] = struct{}{}
+			sf.mu.Unlock()
+		case sess := <-sf.unRegistry:
+			sf.mu.Lock()
+			delete(sf.sessions, sess)
 			sf.mu.Unlock()
 		case m := <-sf.broadcast:
 			sf.mu.Lock()
@@ -104,23 +102,11 @@ func (sf *Hub) Run(ctx context.Context) {
 }
 
 // BroadCast 广播消息
-func (sf *Hub) BroadCast(t int, data interface{}) error {
-	var py []byte
-
-	if sf.IsClosed() {
-		return ErrHubClosed
-	}
-	switch v := data.(type) {
-	case string:
-		py = []byte(v)
-	case []byte:
-		py = v
-	default:
-		return errors.New("Unknown data type")
-	}
-
+func (sf *Hub) BroadCast(t int, data []byte) error {
 	select {
-	case sf.broadcast <- &message{t, py}:
+	case sf.broadcast <- &message{t, data}:
+	case <-sf.lctx.Done():
+		return ErrHubClosed
 	default:
 		return ErrHubBufferFull
 	}
@@ -163,11 +149,11 @@ func (sf *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
 	}
 	sess.lctx, sess.cancel = context.WithCancel(sf.lctx)
 
-	sf.manageSession(true, sess)
+	sf.Register(sess)
 	sf.connectHandler(sess)
 	sess.run()
 	if !sf.IsClosed() {
-		sf.manageSession(false, sess)
+		sf.UnRegister(sess)
 	}
 	sf.disconnectHandler(sess)
 	return nil

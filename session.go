@@ -2,6 +2,7 @@ package easyws
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -14,12 +15,13 @@ import (
 // Session 会话
 type Session struct {
 	Request  *http.Request
-	conn     *websocket.Conn
-	outBound chan *message
 	alive    int32
 	lctx     context.Context
 	cancel   context.CancelFunc
-	Hub      *Hub
+	conn     *websocket.Conn
+	outBound chan *message
+
+	Hub *Hub
 }
 
 // LocalAddr 获取本地址
@@ -33,46 +35,24 @@ func (sf *Session) RemoteAddr() net.Addr {
 }
 
 // WriteMessage 写消息
-func (sf *Session) WriteMessage(messageType int, data interface{}) error {
-	var py []byte
-
-	if sf.IsClosed() {
-		return ErrSessionClosed
-	}
-	switch v := data.(type) {
-	case string:
-		py = []byte(v)
-	case []byte:
-		py = v
-	default:
-		return errors.New("Unknown data type")
-	}
-
+func (sf *Session) WriteMessage(messageType int, data []byte) error {
 	select {
-	case sf.outBound <- &message{messageType, py}:
-	default:
-		return ErrSessionBufferFull
+	case <-sf.lctx.Done():
+		return ErrSessionClosed
+	case sf.outBound <- &message{messageType, data}:
 	}
 
 	return nil
 }
 
 // WriteControl 写控制消息 (CloseMessage, PingMessage and PongMessag.)
-func (sf *Session) WriteControl(messageType int, data interface{}) error {
-	var py []byte
-
-	if sf.IsClosed() {
-		return ErrSessionClosed
-	}
-	switch v := data.(type) {
-	case string:
-		py = []byte(v)
-	case []byte:
-		py = v
+func (sf *Session) WriteControl(messageType int, data []byte) error {
+	select {
+	case <-sf.lctx.Done():
+		return ErrHubClosed
 	default:
-		return errors.New("Unknown data type")
 	}
-	return sf.conn.WriteControl(messageType, py,
+	return sf.conn.WriteControl(messageType, data,
 		time.Now().Add(sf.Hub.SessionConfig.WriteWait))
 }
 
@@ -91,9 +71,10 @@ func (sf *Session) writePump() {
 		case <-sf.lctx.Done():
 			return
 		case msg, ok := <-sf.outBound:
-			sf.conn.SetWriteDeadline(time.Now().Add(cfg.WriteWait))
 			if !ok {
-				sf.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				sf.conn.SetWriteDeadline(time.Now().Add(cfg.WriteWait)) // nolint: errcheck
+				sf.conn.WriteMessage(websocket.CloseMessage, []byte{})  // nolint: errcheck
+				sf.conn.SetWriteDeadline(time.Time{})                   // nolint: errcheck
 				return
 			}
 
@@ -103,7 +84,7 @@ func (sf *Session) writePump() {
 
 			err := sf.conn.WriteMessage(msg.t, msg.data)
 			if err != nil {
-				sf.Hub.errorHandler(sf, errors.Wrap(err, "Run write"))
+				sf.Hub.errorHandler(sf, fmt.Errorf("run write %w", err))
 				return
 			}
 			sf.Hub.sendHandler(sf, msg.t, msg.data)
