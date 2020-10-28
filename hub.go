@@ -35,91 +35,92 @@ type Hub struct {
 	mu        sync.Mutex
 	lctx      context.Context
 	cancel    context.CancelFunc
-	option    *Options
+	config
 }
 
 // New 创建管理中心
-func New(op ...*Options) *Hub {
-	var opt *Options
-	if len(op) > 0 {
-		opt = op[0]
-	} else {
-		opt = NewOptions()
-	}
+func New(opts ...Option) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Hub{
-		sessions:  make(map[*Session]struct{}),
-		registry:  make(chan registry),
-		broadcast: make(chan *message, opt.config.MessageBufferSize),
-		option:    opt,
-		lctx:      ctx,
-		cancel:    cancel,
+	hub := &Hub{
+		sessions: make(map[*Session]struct{}),
+		registry: make(chan registry),
+
+		config: defaultConfig(),
+		lctx:   ctx,
+		cancel: cancel,
 	}
+
+	for _, opt := range opts {
+		opt(hub)
+	}
+
+	hub.broadcast = make(chan *message, hub.MessageBufferSize)
+	return hub
 }
 
 // NewWithRun 创建管理中心并运行
-func NewWithRun(op ...*Options) *Hub {
-	h := New(op...)
+func NewWithRun(opt ...Option) *Hub {
+	h := New(opt...)
 	go h.Run(context.TODO())
 	return h
 }
 
 // manageSession 管理会话
-func (this *Hub) manageSession(isRegister bool, ses *Session) {
-	this.registry <- registry{isRegister, ses}
+func (sf *Hub) manageSession(isRegister bool, ses *Session) {
+	sf.registry <- registry{isRegister, ses}
 }
 
 // Run 运行管理中心
-func (this *Hub) Run(ctx context.Context) {
+func (sf *Hub) Run(ctx context.Context) {
 	defer func() {
-		this.mu.Lock()
-		this.sessions = make(map[*Session]struct{})
-		this.mu.Unlock()
+		sf.mu.Lock()
+		sf.sessions = make(map[*Session]struct{})
+		sf.mu.Unlock()
 	}()
 
 	for {
 		select {
-		case reg := <-this.registry:
-			this.mu.Lock()
+		case reg := <-sf.registry:
+			sf.mu.Lock()
 			if reg.isRegister {
-				this.sessions[reg.sess] = struct{}{}
+				sf.sessions[reg.sess] = struct{}{}
 			} else {
-				delete(this.sessions, reg.sess)
+				delete(sf.sessions, reg.sess)
 			}
-			this.mu.Unlock()
-		case m := <-this.broadcast:
-			this.mu.Lock()
-			for sess := range this.sessions {
+			sf.mu.Unlock()
+		case m := <-sf.broadcast:
+			sf.mu.Lock()
+			for sess := range sf.sessions {
 				sess.WriteMessage(m.t, m.data)
 			}
-			this.mu.Unlock()
+			sf.mu.Unlock()
 		case <-ctx.Done():
-			this.cancel() // local cancel mark it closed
+			sf.cancel() // local cancel mark it closed
 			return
-		case <-this.lctx.Done():
+		case <-sf.lctx.Done():
 			return
 		}
 	}
 }
 
 // BroadCast 广播消息
-func (this *Hub) BroadCast(t int, data interface{}) error {
+func (sf *Hub) BroadCast(t int, data interface{}) error {
 	var py []byte
 
-	if this.IsClosed() {
+	if sf.IsClosed() {
 		return ErrHubClosed
 	}
-	switch data.(type) {
+	switch v := data.(type) {
 	case string:
-		py = []byte(data.(string))
+		py = []byte(v)
 	case []byte:
-		py = data.([]byte)
+		py = v
 	default:
 		return errors.New("Unknown data type")
 	}
 
 	select {
-	case this.broadcast <- &message{t, py}:
+	case sf.broadcast <- &message{t, py}:
 	default:
 		return ErrHubBufferFull
 	}
@@ -127,29 +128,29 @@ func (this *Hub) BroadCast(t int, data interface{}) error {
 }
 
 // SessionLen 返回客户端会话的数量
-func (this *Hub) SessionLen() int {
-	this.mu.Lock()
-	l := len(this.sessions)
-	this.mu.Unlock()
+func (sf *Hub) SessionLen() int {
+	sf.mu.Lock()
+	l := len(sf.sessions)
+	sf.mu.Unlock()
 	return l
 }
 
 // Close 关闭
-func (this *Hub) Close() {
-	this.cancel()
+func (sf *Hub) Close() {
+	sf.cancel()
 }
 
 // IsClosed 判断是否关闭
-func (this *Hub) IsClosed() bool {
-	return this.lctx.Err() != nil
+func (sf *Hub) IsClosed() bool {
+	return sf.lctx.Err() != nil
 }
 
 // UpgradeWithRun 升级成websocket并运行起来
-func (this *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
-	if this.IsClosed() {
+func (sf *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
+	if sf.IsClosed() {
 		return ErrHubClosed
 	}
-	conn, err := this.option.upgrader.Upgrade(w, r, w.Header())
+	conn, err := sf.upgrader.Upgrade(w, r, w.Header())
 	if err != nil {
 		return err
 	}
@@ -157,17 +158,17 @@ func (this *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
 	sess := &Session{
 		Request:  r,
 		conn:     conn,
-		outBound: make(chan *message, this.option.config.MessageBufferSize),
-		Hub:      this,
+		outBound: make(chan *message, sf.SessionConfig.MessageBufferSize),
+		Hub:      sf,
 	}
-	sess.lctx, sess.cancel = context.WithCancel(this.lctx)
+	sess.lctx, sess.cancel = context.WithCancel(sf.lctx)
 
-	this.manageSession(true, sess)
-	this.option.connectHandler(sess)
+	sf.manageSession(true, sess)
+	sf.connectHandler(sess)
 	sess.run()
-	if !this.IsClosed() {
-		this.manageSession(false, sess)
+	if !sf.IsClosed() {
+		sf.manageSession(false, sess)
 	}
-	this.option.disconnectHandler(sess)
+	sf.disconnectHandler(sess)
 	return nil
 }

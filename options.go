@@ -16,94 +16,101 @@ type SessionConfig struct {
 	MessageBufferSize int           // 消息缓存数
 }
 
-// Options 选项配置
-type Options struct {
-	config            *SessionConfig
+// config 配置
+type config struct {
+	SessionConfig
 	upgrader          *websocket.Upgrader
-	receiveHandler    func(s *Session, t int, data []byte)
 	sendHandler       func(s *Session, t int, data []byte)
-	closeHandler      func(s *Session, code int, text string) error
+	receiveHandler    func(s *Session, t int, data []byte)
 	connectHandler    func(s *Session)
 	disconnectHandler func(s *Session)
-	errorHandler      func(s *Session, err error)
-	pongHandler       func(s *Session, str string)
 	pingHandler       func(s *Session, str string)
+	pongHandler       func(s *Session, str string)
+	closeHandler      func(s *Session, code int, text string) error
+	errorHandler      func(s *Session, err error)
 }
 
-// NewOptions 创建默认选项
-func NewOptions() *Options {
-	return &Options{
-		config: &SessionConfig{
+// defaultConfig 创建默认选项
+func defaultConfig() config {
+	return config{
+		SessionConfig{
 			WriteWait:         1 * time.Second,
 			KeepAlive:         60 * time.Second,
 			Radtio:            110,
 			MaxMessageSize:    0,
 			MessageBufferSize: 32,
 		},
-		upgrader: &websocket.Upgrader{
+		&websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin:     func(r *http.Request) bool { return true },
 		},
-		receiveHandler:    func(s *Session, t int, data []byte) {},
-		sendHandler:       func(s *Session, t int, data []byte) {},
-		connectHandler:    func(s *Session) {},
-		disconnectHandler: func(s *Session) {},
-		closeHandler:      nil,
-		errorHandler:      func(s *Session, err error) {},
-		pongHandler:       func(s *Session, str string) {},
-		pingHandler:       func(s *Session, str string) {},
+		func(s *Session, t int, data []byte) {},
+		func(s *Session, t int, data []byte) {},
+		func(s *Session) {},
+		func(s *Session) {},
+		func(s *Session, str string) {},
+		func(s *Session, str string) {},
+		nil,
+		func(s *Session, err error) {},
 	}
 }
 
+type Option func(hub *Hub)
+
 // SetSessionConfig 设置会话配置
-func (this *Options) SetSessionConfig(cfg *SessionConfig) {
-	this.config = cfg
+func WithSessionConfig(cfg *SessionConfig) Option {
+	return func(hub *Hub) {
+		hub.SessionConfig = *cfg
+	}
 }
 
 // SetUpgrade 设置升级配置
-func (this *Options) SetUpgrade(u *websocket.Upgrader) {
-	this.upgrader = u
+func WithUpgrade(u *websocket.Upgrader) Option {
+	return func(hub *Hub) {
+		hub.upgrader = u
+	}
 }
 
 // SetReceiveHandler 设置接收回调
-func (this *Options) SetReceiveHandler(f func(s *Session, t int, data []byte)) {
-	if f != nil {
-		this.receiveHandler = f
+func WithReceiveHandler(f func(s *Session, t int, data []byte)) Option {
+	return func(hub *Hub) {
+		hub.receiveHandler = f
 	}
 }
 
 // SetSendHandler 设置发送回调
-func (this *Options) SetSendHandler(f func(s *Session, t int, data []byte)) {
-	if f != nil {
-		this.sendHandler = f
+func WithSendHandler(f func(s *Session, t int, data []byte)) Option {
+	return func(hub *Hub) {
+		hub.sendHandler = f
 	}
 }
 
 // SetConnectHandler 设置连接回调
-func (this *Options) SetConnectHandler(f func(s *Session)) {
-	if f != nil {
-		this.connectHandler = f
+func WithConnectHandler(f func(s *Session)) Option {
+	return func(hub *Hub) {
+		hub.connectHandler = f
 	}
 }
 
 // SetDisonnectHandler 设置断开连接回调
-func (this *Options) SetDisonnectHandler(f func(s *Session)) {
-	if f != nil {
-		this.disconnectHandler = f
+func WithDisonnectHandler(f func(s *Session)) Option {
+	return func(hub *Hub) {
+		hub.disconnectHandler = f
 	}
 }
 
 // SetPongHandler 设置收到Pong回调
-func (this *Options) SetPongHandler(f func(s *Session, str string)) {
-	if f != nil {
-		this.pongHandler = f
+func WithPongHandler(f func(s *Session, str string)) Option {
+	return func(hub *Hub) {
+		hub.pongHandler = f
 	}
+
 }
 
 // SetPingHandler 设置收到Ping回调
-func (this *Options) SetPingHandler(f func(s *Session, str string)) {
-	if f != nil {
-		this.pingHandler = f
+func WithPingHandler(f func(s *Session, str string)) Option {
+	return func(hub *Hub) {
+		hub.pingHandler = f
 	}
 }
