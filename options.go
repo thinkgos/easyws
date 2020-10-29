@@ -1,10 +1,7 @@
 package easyws
 
 import (
-	"net/http"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // SessionConfig 会话配置
@@ -19,7 +16,6 @@ type SessionConfig struct {
 // config 配置
 type config struct {
 	SessionConfig
-	upgrader          *websocket.Upgrader
 	sendHandler       func(s *Session, t int, data []byte)
 	receiveHandler    func(s *Session, t int, data []byte)
 	connectHandler    func(s *Session)
@@ -40,11 +36,6 @@ func defaultConfig() config {
 			MaxMessageSize:    0,
 			MessageBufferSize: 32,
 		},
-		&websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			CheckOrigin:     func(r *http.Request) bool { return true },
-		},
 		func(s *Session, t int, data []byte) {},
 		func(s *Session, t int, data []byte) {},
 		func(s *Session) {},
@@ -62,13 +53,6 @@ type Option func(hub *Hub)
 func WithSessionConfig(cfg *SessionConfig) Option {
 	return func(hub *Hub) {
 		hub.SessionConfig = *cfg
-	}
-}
-
-// SetUpgrade 设置升级配置
-func WithUpgrade(u *websocket.Upgrader) Option {
-	return func(hub *Hub) {
-		hub.upgrader = u
 	}
 }
 

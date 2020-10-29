@@ -9,16 +9,17 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pkg/errors"
 )
 
 // Session 会话
 type Session struct {
+	GroupID  string
+	ID       string
+	Conn     *websocket.Conn
 	Request  *http.Request
 	alive    int32
 	lctx     context.Context
 	cancel   context.CancelFunc
-	conn     *websocket.Conn
 	outBound chan *message
 
 	Hub *Hub
@@ -26,12 +27,12 @@ type Session struct {
 
 // LocalAddr 获取本地址
 func (sf *Session) LocalAddr() net.Addr {
-	return sf.conn.LocalAddr()
+	return sf.Conn.LocalAddr()
 }
 
 // RemoteAddr 获取远程地址
 func (sf *Session) RemoteAddr() net.Addr {
-	return sf.conn.RemoteAddr()
+	return sf.Conn.RemoteAddr()
 }
 
 // WriteMessage 写消息
@@ -41,7 +42,6 @@ func (sf *Session) WriteMessage(messageType int, data []byte) error {
 		return ErrSessionClosed
 	case sf.outBound <- &message{messageType, data}:
 	}
-
 	return nil
 }
 
@@ -49,11 +49,73 @@ func (sf *Session) WriteMessage(messageType int, data []byte) error {
 func (sf *Session) WriteControl(messageType int, data []byte) error {
 	select {
 	case <-sf.lctx.Done():
-		return ErrHubClosed
+		return ErrSessionClosed
 	default:
 	}
-	return sf.conn.WriteControl(messageType, data,
+	return sf.Conn.WriteControl(messageType, data,
 		time.Now().Add(sf.Hub.SessionConfig.WriteWait))
+}
+
+// Run
+func (sf *Session) Run() {
+	sf.outBound = make(chan *message, sf.Hub.SessionConfig.MessageBufferSize)
+	sf.lctx, sf.cancel = context.WithCancel(sf.Hub.ctx)
+	sf.Hub.register(sf)
+	sf.Hub.connectHandler(sf)
+	defer func() {
+		sf.Hub.UnRegister(sf.GroupID, sf.ID)
+		sf.Hub.disconnectHandler(sf)
+	}()
+	go sf.writePump()
+
+	cfg := sf.Hub.SessionConfig
+	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * 4
+
+	// 设置 pong handler
+	sf.Conn.SetPongHandler(func(message string) error {
+		atomic.StoreInt32(&sf.alive, 0)
+		// sf.Conn.SetReadDeadline(time.Now().Add(readWait))
+		sf.Hub.pongHandler(sf, message)
+		return nil
+	})
+
+	// 设置 ping handler
+	sf.Conn.SetPingHandler(func(message string) error {
+		atomic.StoreInt32(&sf.alive, 0)
+		// sf.Conn.SetReadDeadline(time.Now().Add(readWait))
+		err := sf.Conn.WriteControl(websocket.PongMessage, []byte(message), time.Now().Add(cfg.WriteWait))
+		if err != nil {
+			if e, ok := err.(net.Error); !(ok && e.Temporary() ||
+				err == websocket.ErrCloseSent) {
+				return err
+			}
+		}
+		sf.Hub.pingHandler(sf, message)
+		return nil
+	})
+
+	if sf.Hub.closeHandler != nil {
+		sf.Conn.SetCloseHandler(func(code int, text string) error {
+			return sf.Hub.closeHandler(sf, code, text)
+		})
+	}
+
+	if cfg.MaxMessageSize > 0 {
+		sf.Conn.SetReadLimit(cfg.MaxMessageSize)
+	}
+	sf.Conn.SetReadDeadline(time.Now().Add(readWait))
+	for {
+		t, data, err := sf.Conn.ReadMessage()
+		if err != nil {
+			sf.Hub.errorHandler(sf, fmt.Errorf("Run read %w", err))
+			break
+		}
+		atomic.StoreInt32(&sf.alive, 0)
+		sf.Hub.receiveHandler(sf, t, data)
+	}
+
+	sf.Conn.Close()
+	sf.cancel()
 }
 
 // writePump
@@ -64,7 +126,7 @@ func (sf *Session) writePump() {
 	monTick := time.NewTicker(cfg.KeepAlive * time.Duration(cfg.Radtio) / 100)
 	defer func() {
 		monTick.Stop()
-		sf.conn.Close()
+		sf.Conn.Close()
 	}()
 	for {
 		select {
@@ -72,9 +134,9 @@ func (sf *Session) writePump() {
 			return
 		case msg, ok := <-sf.outBound:
 			if !ok {
-				sf.conn.SetWriteDeadline(time.Now().Add(cfg.WriteWait)) // nolint: errcheck
-				sf.conn.WriteMessage(websocket.CloseMessage, []byte{})  // nolint: errcheck
-				sf.conn.SetWriteDeadline(time.Time{})                   // nolint: errcheck
+				sf.Conn.SetWriteDeadline(time.Now().Add(cfg.WriteWait)) // nolint: errcheck
+				sf.Conn.WriteMessage(websocket.CloseMessage, []byte{})  // nolint: errcheck
+				sf.Conn.SetWriteDeadline(time.Time{})                   // nolint: errcheck
 				return
 			}
 
@@ -82,9 +144,9 @@ func (sf *Session) writePump() {
 				return
 			}
 
-			err := sf.conn.WriteMessage(msg.t, msg.data)
+			err := sf.Conn.WriteMessage(msg.t, msg.data)
 			if err != nil {
-				sf.Hub.errorHandler(sf, fmt.Errorf("run write %w", err))
+				sf.Hub.errorHandler(sf, fmt.Errorf("Run write %w", err))
 				return
 			}
 			sf.Hub.sendHandler(sf, msg.t, msg.data)
@@ -93,10 +155,10 @@ func (sf *Session) writePump() {
 				if retries++; retries > 3 {
 					return
 				}
-				err := sf.conn.WriteControl(websocket.PingMessage, []byte{},
+				err := sf.Conn.WriteControl(websocket.PingMessage, []byte{},
 					time.Now().Add(cfg.WriteWait))
 				if err != nil {
-					sf.Hub.errorHandler(sf, errors.Wrap(err, "Run write"))
+					sf.Hub.errorHandler(sf, fmt.Errorf("Run write %w", err))
 					return
 				}
 			} else {
@@ -104,66 +166,4 @@ func (sf *Session) writePump() {
 			}
 		}
 	}
-}
-
-// run
-func (sf *Session) run() {
-	go sf.writePump()
-
-	cfg := sf.Hub.SessionConfig
-	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * 4
-
-	sf.conn.SetPongHandler(func(message string) error {
-		atomic.StoreInt32(&sf.alive, 0)
-		sf.conn.SetReadDeadline(time.Now().Add(readWait))
-		sf.Hub.pongHandler(sf, message)
-		return nil
-	})
-
-	sf.conn.SetPingHandler(func(message string) error {
-		atomic.StoreInt32(&sf.alive, 0)
-		sf.conn.SetReadDeadline(time.Now().Add(readWait))
-		err := sf.conn.WriteControl(websocket.PongMessage,
-			[]byte(message), time.Now().Add(cfg.WriteWait))
-		if err != nil {
-			if e, ok := err.(net.Error); !(ok && e.Temporary() ||
-				err == websocket.ErrCloseSent) {
-				return err
-			}
-		}
-		sf.Hub.pingHandler(sf, message)
-		return nil
-	})
-	if sf.Hub.closeHandler != nil {
-		sf.conn.SetCloseHandler(func(code int, text string) error {
-			return sf.Hub.closeHandler(sf, code, text)
-		})
-	}
-
-	if cfg.MaxMessageSize > 0 {
-		sf.conn.SetReadLimit(cfg.MaxMessageSize)
-	}
-	sf.conn.SetReadDeadline(time.Now().Add(readWait))
-	for {
-		t, data, err := sf.conn.ReadMessage()
-		if err != nil {
-			sf.Hub.errorHandler(sf, errors.Wrap(err, "Run read"))
-			break
-		}
-		atomic.StoreInt32(&sf.alive, 0)
-		sf.Hub.receiveHandler(sf, t, data)
-	}
-
-	sf.Close()
-}
-
-// Close 关闭会话
-func (sf *Session) Close() {
-	sf.conn.Close()
-	sf.cancel()
-}
-
-// IsClosed 判断会话是否关闭
-func (sf *Session) IsClosed() bool {
-	return sf.lctx.Err() != nil
 }
