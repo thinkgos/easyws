@@ -2,6 +2,7 @@ package easyws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,18 +26,18 @@ type Session struct {
 	Hub *Hub
 }
 
-// WriteMessage 写消息
-func (sf *Session) WriteMessage(messageType int, data []byte) error {
-	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
-		return ErrBadMessageType
+// WriteMessage 写消息 (websocket.TextMessage, websocket.BinaryMessage)
+func (sf *Session) WriteMessage(msgType int, data []byte) error {
+	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
+		return ErrBadmsgType
 	}
-	sf.outBound <- &message{messageType, data}
+	sf.outBound <- &message{msgType, data}
 	return nil
 }
 
 // WriteControl 写控制消息 (websocket.CloseMessage, websocket.PingMessage and websocket.PongMessage.)
-func (sf *Session) WriteControl(messageType int, data []byte) error {
-	return sf.Conn.WriteControl(messageType, data,
+func (sf *Session) WriteControl(msgType int, data []byte) error {
+	return sf.Conn.WriteControl(msgType, data,
 		time.Now().Add(sf.Hub.SessionConfig.WriteTimeout))
 }
 
@@ -56,12 +57,12 @@ func (sf *Session) Run() {
 	}()
 	go sf.writePump()
 
-	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * 4
+	readTimeout := cfg.KeepAlive * time.Duration(cfg.Ratio) / 100 * 4
 
 	// 设置 pong handler
 	sf.Conn.SetPongHandler(func(message string) error {
 		atomic.StoreInt32(&sf.alive, 0)
-		// sf.Conn.SetReadDeadline(time.Now().Add(readWait))
+		sf.Conn.SetReadDeadline(time.Now().Add(readTimeout))
 		sf.Hub.pongHandler(sf, message)
 		return nil
 	})
@@ -69,11 +70,10 @@ func (sf *Session) Run() {
 	// 设置 ping handler
 	sf.Conn.SetPingHandler(func(message string) error {
 		atomic.StoreInt32(&sf.alive, 0)
-		// sf.Conn.SetReadDeadline(time.Now().Add(readWait))
+		sf.Conn.SetReadDeadline(time.Now().Add(readTimeout))
 		err := sf.Conn.WriteControl(websocket.PongMessage, []byte(message), time.Now().Add(cfg.WriteTimeout))
 		if err != nil {
-			if e, ok := err.(net.Error); !(ok && e.Temporary() ||
-				err == websocket.ErrCloseSent) {
+			if e, ok := err.(net.Error); !(ok && e.Temporary() || err == websocket.ErrCloseSent) {
 				return err
 			}
 		}
@@ -81,24 +81,23 @@ func (sf *Session) Run() {
 		return nil
 	})
 
-	if sf.Hub.closeHandler != nil {
-		sf.Conn.SetCloseHandler(func(code int, text string) error {
-			return sf.Hub.closeHandler(sf, code, text)
-		})
-	}
+	sf.Conn.SetCloseHandler(func(code int, text string) error {
+		return sf.Hub.closeHandler(sf, code, text)
+	})
 
 	if cfg.MaxMessageSize > 0 {
 		sf.Conn.SetReadLimit(cfg.MaxMessageSize)
 	}
-	sf.Conn.SetReadDeadline(time.Now().Add(readWait))
+
 	for {
-		t, data, err := sf.Conn.ReadMessage()
+		sf.Conn.SetReadDeadline(time.Now().Add(readTimeout))
+		msgType, data, err := sf.Conn.ReadMessage()
 		if err != nil {
-			sf.Hub.errorHandler(sf, fmt.Errorf("run read %w", err))
+			sf.Hub.errorHandler(sf, fmt.Errorf("read message %w", err))
 			return
 		}
 		atomic.StoreInt32(&sf.alive, 0)
-		sf.Hub.receiveHandler(sf, t, data)
+		sf.Hub.receiveHandler(sf, msgType, data)
 	}
 }
 
@@ -107,7 +106,7 @@ func (sf *Session) writePump() {
 	var retries int
 
 	cfg := sf.Hub.SessionConfig
-	monTick := time.NewTicker(cfg.KeepAlive * time.Duration(cfg.Radtio) / 100)
+	monTick := time.NewTicker(cfg.KeepAlive * time.Duration(cfg.Ratio) / 100)
 	defer func() {
 		monTick.Stop()
 		sf.Conn.Close()
@@ -117,22 +116,23 @@ func (sf *Session) writePump() {
 		case <-sf.lctx.Done():
 			return
 		case msg := <-sf.outBound:
-			err := sf.Conn.WriteMessage(msg.messageType, msg.data)
+			err := sf.Conn.WriteMessage(msg.msgType, msg.data)
 			if err != nil {
-				sf.Hub.errorHandler(sf, fmt.Errorf("run write %w", err))
+				sf.Hub.errorHandler(sf, fmt.Errorf("ws: write message %w", err))
 				return
 			}
-			sf.Hub.sendHandler(sf, msg.messageType, msg.data)
+			sf.Hub.sendHandler(sf, msg.msgType, msg.data)
 		case <-monTick.C:
 			if atomic.AddInt32(&sf.alive, 1) > 1 {
 				retries++
 				if retries > 3 {
+					sf.Hub.errorHandler(sf, errors.New("ws: keep alive failed"))
 					return
 				}
 				err := sf.Conn.WriteControl(websocket.PingMessage, []byte{},
 					time.Now().Add(cfg.WriteTimeout))
 				if err != nil {
-					sf.Hub.errorHandler(sf, fmt.Errorf("run write %w", err))
+					sf.Hub.errorHandler(sf, fmt.Errorf("ws: write control %w", err))
 					return
 				}
 			} else {

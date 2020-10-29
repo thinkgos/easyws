@@ -10,23 +10,23 @@ import (
 
 // 错误返回
 var (
-	ErrHubClosed       = errors.New("hub is closed")
+	ErrHubClosed       = errors.New("ws: hub is closed")
 	ErrSessionNotFound = errors.New("ws: session not found")
-	ErrBadMessageType  = errors.New("ws: bad write tMessage type")
+	ErrBadmsgType      = errors.New("ws: bad write tMessage type")
 )
 
 // 广播/组播 消息体
 type tMessage struct {
 	isBroadcast bool // 广播/组播
 	groupID     string
-	messageType int
+	msgType     int
 	data        []byte
 }
 
 // message session 消息体
 type message struct {
-	messageType int
-	data        []byte
+	msgType int
+	data    []byte
 }
 
 // Hub 管理中心
@@ -113,13 +113,13 @@ func (sf *Hub) Run(ctx context.Context) {
 				group, ok := sf.sessions[msg.groupID]
 				if ok {
 					for _, sess := range group {
-						sess.WriteMessage(msg.messageType, msg.data) // nolint: errcheck
+						sess.WriteMessage(msg.msgType, msg.data) // nolint: errcheck
 					}
 				}
 			} else {
 				for _, group := range sf.sessions {
 					for _, sess := range group {
-						sess.WriteMessage(msg.messageType, msg.data) // nolint: errcheck
+						sess.WriteMessage(msg.msgType, msg.data) // nolint: errcheck
 					}
 				}
 			}
@@ -133,36 +133,36 @@ func (sf *Hub) Run(ctx context.Context) {
 	}
 }
 
-// WriteBroadcast 广播消息
-func (sf *Hub) WriteBroadcast(messageType int, data []byte) error {
-	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
-		return ErrBadMessageType
+// WriteBroadcast 广播消息 (websocket.TextMessage, websocket.BinaryMessage)
+func (sf *Hub) WriteBroadcast(msgType int, data []byte) error {
+	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
+		return ErrBadmsgType
 	}
 	select {
-	case sf.tMessage <- &tMessage{true, "", messageType, data}:
+	case sf.tMessage <- &tMessage{true, "", msgType, data}:
 		return nil
 	case <-sf.ctx.Done():
 		return ErrHubClosed
 	}
 }
 
-// WriteGroup 组播
-func (sf *Hub) WriteGroup(groupID string, messageType int, data []byte) error {
-	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
-		return ErrBadMessageType
+// WriteGroup 组播 (websocket.TextMessage, websocket.BinaryMessage)
+func (sf *Hub) WriteGroup(groupID string, msgType int, data []byte) error {
+	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
+		return ErrBadmsgType
 	}
 	select {
-	case sf.tMessage <- &tMessage{false, groupID, messageType, data}:
+	case sf.tMessage <- &tMessage{false, groupID, msgType, data}:
 		return nil
 	case <-sf.ctx.Done():
 		return ErrHubClosed
 	}
 }
 
-// WriteMessage 单播
-func (sf *Hub) WriteMessage(groupID, id string, messageType int, data []byte) error {
-	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
-		return ErrBadMessageType
+// WriteMessage 单播 (websocket.TextMessage, websocket.BinaryMessage)
+func (sf *Hub) WriteMessage(groupID, id string, msgType int, data []byte) error {
+	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
+		return ErrBadmsgType
 	}
 	select {
 	case <-sf.ctx.Done():
@@ -175,18 +175,18 @@ func (sf *Hub) WriteMessage(groupID, id string, messageType int, data []byte) er
 	if err != nil {
 		return err
 	}
-	return sess.WriteMessage(messageType, data)
+	return sess.WriteMessage(msgType, data)
 }
 
 // WriteControl 单播控制信息
-func (sf *Hub) WriteControl(groupID, id string, messageType int, data []byte) error {
+func (sf *Hub) WriteControl(groupID, id string, msgType int, data []byte) error {
 	sf.mu.Lock()
 	sess, err := sf.findSession(groupID, id)
 	sf.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return sess.WriteControl(messageType, data)
+	return sess.WriteControl(msgType, data)
 }
 
 // SessionLen 客户端会话的数量

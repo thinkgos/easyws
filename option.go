@@ -8,7 +8,7 @@ import (
 type SessionConfig struct {
 	WriteTimeout      time.Duration // 写超时时间
 	KeepAlive         time.Duration // 保活时间
-	Radtio            int           // 监控比例, 需大于100,默认系统是110 即比例1.1
+	Ratio             int           // 监控比例, 需大于100,默认系统是110 即比例值1.1
 	MaxMessageSize    int64         // 消息最大字节数, 如果为0,使用系统默认设置
 	MessageBufferSize int           // 消息缓存数
 }
@@ -18,10 +18,10 @@ type config struct {
 	SessionConfig
 	connectHandler    func(sess *Session)
 	disconnectHandler func(sess *Session)
-	pingHandler       func(sess *Session, str string)
-	pongHandler       func(sess *Session, str string)
-	sendHandler       func(sess *Session, messageType int, data []byte)
-	receiveHandler    func(sess *Session, messageType int, data []byte)
+	pingHandler       func(sess *Session, msg string)
+	pongHandler       func(sess *Session, msg string)
+	sendHandler       func(sess *Session, msgType int, data []byte)
+	receiveHandler    func(sess *Session, msgType int, data []byte)
 	closeHandler      func(sess *Session, code int, text string) error
 	errorHandler      func(sess *Session, err error)
 }
@@ -32,7 +32,7 @@ func defaultConfig() config {
 		SessionConfig{
 			WriteTimeout:      1 * time.Second,
 			KeepAlive:         60 * time.Second,
-			Radtio:            110,
+			Ratio:             110,
 			MaxMessageSize:    0,
 			MessageBufferSize: 32,
 		},
@@ -41,9 +41,9 @@ func defaultConfig() config {
 		func(sess *Session) {},
 		func(sess *Session, msg string) {},
 		func(sess *Session, msg string) {},
-		func(sess *Session, messageType int, data []byte) {},
-		func(sess *Session, messageType int, data []byte) {},
-		nil,
+		func(sess *Session, msgType int, data []byte) {},
+		func(sess *Session, msgType int, data []byte) {},
+		func(sess *Session, code int, text string) error { return nil },
 		func(sess *Session, err error) {},
 	}
 }
@@ -86,14 +86,14 @@ func WithPongHandler(f func(sess *Session, str string)) Option {
 }
 
 // WithSendHandler 设置发送回调
-func WithSendHandler(f func(sess *Session, messageType int, data []byte)) Option {
+func WithSendHandler(f func(sess *Session, msgType int, data []byte)) Option {
 	return func(hub *Hub) {
 		hub.sendHandler = f
 	}
 }
 
 // WithReceiveHandler 设置接收回调
-func WithReceiveHandler(f func(sess *Session, messageType int, data []byte)) Option {
+func WithReceiveHandler(f func(sess *Session, msgType int, data []byte)) Option {
 	return func(hub *Hub) {
 		hub.receiveHandler = f
 	}
