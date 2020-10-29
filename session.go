@@ -25,50 +25,37 @@ type Session struct {
 	Hub *Hub
 }
 
-// LocalAddr 获取本地址
-func (sf *Session) LocalAddr() net.Addr {
-	return sf.Conn.LocalAddr()
-}
-
-// RemoteAddr 获取远程地址
-func (sf *Session) RemoteAddr() net.Addr {
-	return sf.Conn.RemoteAddr()
-}
-
 // WriteMessage 写消息
 func (sf *Session) WriteMessage(messageType int, data []byte) error {
-	select {
-	case <-sf.lctx.Done():
-		return ErrSessionClosed
-	case sf.outBound <- &message{messageType, data}:
+	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
+		return ErrBadMessageType
 	}
+	sf.outBound <- &message{messageType, data}
 	return nil
 }
 
-// WriteControl 写控制消息 (CloseMessage, PingMessage and PongMessag.)
+// WriteControl 写控制消息 (websocket.CloseMessage, websocket.PingMessage and websocket.PongMessage.)
 func (sf *Session) WriteControl(messageType int, data []byte) error {
-	select {
-	case <-sf.lctx.Done():
-		return ErrSessionClosed
-	default:
-	}
 	return sf.Conn.WriteControl(messageType, data,
-		time.Now().Add(sf.Hub.SessionConfig.WriteWait))
+		time.Now().Add(sf.Hub.SessionConfig.WriteTimeout))
 }
 
 // Run
 func (sf *Session) Run() {
-	sf.outBound = make(chan *message, sf.Hub.SessionConfig.MessageBufferSize)
+	cfg := sf.Hub.SessionConfig
+
+	sf.outBound = make(chan *message, cfg.MessageBufferSize)
 	sf.lctx, sf.cancel = context.WithCancel(sf.Hub.ctx)
 	sf.Hub.register(sf)
 	sf.Hub.connectHandler(sf)
 	defer func() {
+		sf.Conn.Close()
+		sf.cancel()
 		sf.Hub.UnRegister(sf.GroupID, sf.ID)
 		sf.Hub.disconnectHandler(sf)
 	}()
 	go sf.writePump()
 
-	cfg := sf.Hub.SessionConfig
 	readWait := cfg.KeepAlive * time.Duration(cfg.Radtio) / 100 * 4
 
 	// 设置 pong handler
@@ -83,7 +70,7 @@ func (sf *Session) Run() {
 	sf.Conn.SetPingHandler(func(message string) error {
 		atomic.StoreInt32(&sf.alive, 0)
 		// sf.Conn.SetReadDeadline(time.Now().Add(readWait))
-		err := sf.Conn.WriteControl(websocket.PongMessage, []byte(message), time.Now().Add(cfg.WriteWait))
+		err := sf.Conn.WriteControl(websocket.PongMessage, []byte(message), time.Now().Add(cfg.WriteTimeout))
 		if err != nil {
 			if e, ok := err.(net.Error); !(ok && e.Temporary() ||
 				err == websocket.ErrCloseSent) {
@@ -107,15 +94,12 @@ func (sf *Session) Run() {
 	for {
 		t, data, err := sf.Conn.ReadMessage()
 		if err != nil {
-			sf.Hub.errorHandler(sf, fmt.Errorf("Run read %w", err))
-			break
+			sf.Hub.errorHandler(sf, fmt.Errorf("run read %w", err))
+			return
 		}
 		atomic.StoreInt32(&sf.alive, 0)
 		sf.Hub.receiveHandler(sf, t, data)
 	}
-
-	sf.Conn.Close()
-	sf.cancel()
 }
 
 // writePump
@@ -132,33 +116,23 @@ func (sf *Session) writePump() {
 		select {
 		case <-sf.lctx.Done():
 			return
-		case msg, ok := <-sf.outBound:
-			if !ok {
-				sf.Conn.SetWriteDeadline(time.Now().Add(cfg.WriteWait)) // nolint: errcheck
-				sf.Conn.WriteMessage(websocket.CloseMessage, []byte{})  // nolint: errcheck
-				sf.Conn.SetWriteDeadline(time.Time{})                   // nolint: errcheck
-				return
-			}
-
-			if msg.t == websocket.CloseMessage {
-				return
-			}
-
-			err := sf.Conn.WriteMessage(msg.t, msg.data)
+		case msg := <-sf.outBound:
+			err := sf.Conn.WriteMessage(msg.messageType, msg.data)
 			if err != nil {
-				sf.Hub.errorHandler(sf, fmt.Errorf("Run write %w", err))
+				sf.Hub.errorHandler(sf, fmt.Errorf("run write %w", err))
 				return
 			}
-			sf.Hub.sendHandler(sf, msg.t, msg.data)
+			sf.Hub.sendHandler(sf, msg.messageType, msg.data)
 		case <-monTick.C:
 			if atomic.AddInt32(&sf.alive, 1) > 1 {
-				if retries++; retries > 3 {
+				retries++
+				if retries > 3 {
 					return
 				}
 				err := sf.Conn.WriteControl(websocket.PingMessage, []byte{},
-					time.Now().Add(cfg.WriteWait))
+					time.Now().Add(cfg.WriteTimeout))
 				if err != nil {
-					sf.Hub.errorHandler(sf, fmt.Errorf("Run write %w", err))
+					sf.Hub.errorHandler(sf, fmt.Errorf("run write %w", err))
 					return
 				}
 			} else {

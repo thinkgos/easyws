@@ -3,7 +3,6 @@ package easyws
 import (
 	"context"
 	"errors"
-	"net/http"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -11,23 +10,30 @@ import (
 
 // 错误返回
 var (
-	ErrHubClosed         = errors.New("hub is closed")
-	ErrHubBufferFull     = errors.New("hub buffer is full")
-	ErrSessionClosed     = errors.New("session is closed")
-	ErrSessionBufferFull = errors.New("session buffer is full")
+	ErrHubClosed       = errors.New("hub is closed")
+	ErrSessionNotFound = errors.New("ws: session not found")
+	ErrBadMessageType  = errors.New("ws: bad write tMessage type")
 )
 
-// message 消息包
+// 广播/组播 消息体
+type tMessage struct {
+	isBroadcast bool // 广播/组播
+	groupID     string
+	messageType int
+	data        []byte
+}
+
+// message session 消息体
 type message struct {
-	t    int
-	data []byte
+	messageType int
+	data        []byte
 }
 
 // Hub 管理中心
 type Hub struct {
-	broadcast chan *message
-	ctx       context.Context
-	cancel    context.CancelFunc
+	tMessage chan *tMessage
+	ctx      context.Context
+	cancel   context.CancelFunc
 	config
 
 	// 以下需要持锁
@@ -51,7 +57,7 @@ func New(opts ...Option) *Hub {
 		opt(hub)
 	}
 
-	hub.broadcast = make(chan *message, hub.MessageBufferSize)
+	hub.tMessage = make(chan *tMessage, hub.MessageBufferSize)
 	return hub
 }
 
@@ -73,14 +79,14 @@ func (sf *Hub) register(sess *Session) {
 func (sf *Hub) UnRegister(groupID, id string) {
 	sf.mu.Lock()
 	if group, ok := sf.sessions[groupID]; ok {
-		if client, ok := group[id]; ok {
+		if sess, ok := group[id]; ok {
 			delete(group, id)
 			sf.sessCnt--
 			if len(group) == 0 {
 				delete(sf.sessions, groupID)
 				sf.groupCnt--
 			}
-			client.cancel()
+			sess.cancel()
 		}
 	}
 	sf.mu.Unlock()
@@ -101,8 +107,23 @@ func (sf *Hub) Run(ctx context.Context) {
 
 	for {
 		select {
-		case <-sf.broadcast:
-
+		case msg := <-sf.tMessage:
+			sf.mu.Lock()
+			if msg.isBroadcast {
+				group, ok := sf.sessions[msg.groupID]
+				if ok {
+					for _, sess := range group {
+						sess.WriteMessage(msg.messageType, msg.data) // nolint: errcheck
+					}
+				}
+			} else {
+				for _, group := range sf.sessions {
+					for _, sess := range group {
+						sess.WriteMessage(msg.messageType, msg.data) // nolint: errcheck
+					}
+				}
+			}
+			sf.mu.Unlock()
 		case <-ctx.Done():
 			sf.cancel() // local cancel mark it closed
 			return
@@ -112,19 +133,63 @@ func (sf *Hub) Run(ctx context.Context) {
 	}
 }
 
-// BroadCast 广播消息
-func (sf *Hub) BroadCast(t int, data []byte) error {
+// WriteBroadcast 广播消息
+func (sf *Hub) WriteBroadcast(messageType int, data []byte) error {
+	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
+		return ErrBadMessageType
+	}
 	select {
-	case sf.broadcast <- &message{t, data}:
+	case sf.tMessage <- &tMessage{true, "", messageType, data}:
+		return nil
+	case <-sf.ctx.Done():
+		return ErrHubClosed
+	}
+}
+
+// WriteGroup 组播
+func (sf *Hub) WriteGroup(groupID string, messageType int, data []byte) error {
+	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
+		return ErrBadMessageType
+	}
+	select {
+	case sf.tMessage <- &tMessage{false, groupID, messageType, data}:
+		return nil
+	case <-sf.ctx.Done():
+		return ErrHubClosed
+	}
+}
+
+// WriteMessage 单播
+func (sf *Hub) WriteMessage(groupID, id string, messageType int, data []byte) error {
+	if !(messageType == websocket.TextMessage || messageType == websocket.BinaryMessage) {
+		return ErrBadMessageType
+	}
+	select {
 	case <-sf.ctx.Done():
 		return ErrHubClosed
 	default:
-		return ErrHubBufferFull
 	}
-	return nil
+	sf.mu.Lock()
+	sess, err := sf.findSession(groupID, id)
+	sf.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return sess.WriteMessage(messageType, data)
 }
 
-// SessionLen 返回客户端会话的数量
+// WriteControl 单播控制信息
+func (sf *Hub) WriteControl(groupID, id string, messageType int, data []byte) error {
+	sf.mu.Lock()
+	sess, err := sf.findSession(groupID, id)
+	sf.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return sess.WriteControl(messageType, data)
+}
+
+// SessionLen 客户端会话的数量
 func (sf *Hub) SessionLen() (count int) {
 	sf.mu.Lock()
 	count = sf.sessCnt
@@ -132,6 +197,7 @@ func (sf *Hub) SessionLen() (count int) {
 	return
 }
 
+// GroupLen 组个数
 func (sf *Hub) GroupLen() (count int) {
 	sf.mu.Lock()
 	count = sf.groupCnt
@@ -149,27 +215,11 @@ func (sf *Hub) IsClosed() bool {
 	return sf.ctx.Err() != nil
 }
 
-// UpgradeWithRun 升级成websocket并运行起来
-func (sf *Hub) UpgradeWithRun(w http.ResponseWriter, r *http.Request) error {
-	upGrader := &websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin:     func(r *http.Request) bool { return true },
+func (sf *Hub) findSession(groupID, id string) (*Session, error) {
+	if group, ok := sf.sessions[groupID]; ok {
+		if sess, ok := group[id]; ok {
+			return sess, nil
+		}
 	}
-	conn, err := upGrader.Upgrade(w, r, w.Header())
-	if err != nil {
-		return err
-	}
-
-	sess := &Session{
-		GroupID: "",
-		ID:      "",
-		Request: r,
-		Conn:    conn,
-		Hub:     sf,
-	}
-
-	sess.Run()
-
-	return nil
+	return nil, ErrSessionNotFound
 }
