@@ -34,7 +34,7 @@ func defaultConfig() config {
 			KeepAlive:         60 * time.Second,
 			Ratio:             110,
 			MaxMessageSize:    0,
-			MessageBufferSize: 32,
+			MessageBufferSize: 128,
 		},
 
 		func(sess *Session) {},

@@ -57,7 +57,7 @@ func New(opts ...Option) *Hub {
 		opt(hub)
 	}
 
-	hub.tMessage = make(chan *tMessage, hub.MessageBufferSize)
+	hub.tMessage = make(chan *tMessage, hub.MessageBufferSize<<2)
 	return hub
 }
 
