@@ -2,7 +2,9 @@ package main
 
 import (
 	"log"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -24,8 +26,11 @@ func main() {
 		easyws.WithPongHandler(func(sess *easyws.Session, str string) {
 			log.Println("pong ", sess.GroupID, sess.ID)
 		}),
-		easyws.WithReceiveHandler(func(sess *easyws.Session, messageType int, data []byte) {
-			log.Println("message ", sess.GroupID, sess.ID, messageType, string(data))
+		easyws.WithReceiveHandler(func(sess *easyws.Session, msgType int, data []byte) {
+			log.Println("message ", sess.GroupID, sess.ID, msgType, string(data))
+		}),
+		easyws.WithErrorHandler(func(sess *easyws.Session, err error) {
+			log.Println("error ", sess.GroupID, sess.ID, err)
 		}),
 	}
 
@@ -42,9 +47,10 @@ func main() {
 			return
 		}
 
+		id := strconv.Itoa(rand.Int())
 		sess := &easyws.Session{
 			GroupID: "testGroup",
-			ID:      "testId",
+			ID:      id,
 			Request: r,
 			Conn:    conn,
 			Hub:     hub,
@@ -52,7 +58,7 @@ func main() {
 		go func() {
 			time.Sleep(time.Second)
 			for {
-				err := hub.WriteMessage("testGroup", "testId", websocket.TextMessage, []byte("hello world"))
+				err := hub.WriteMessage("testGroup", id, websocket.TextMessage, []byte("hello world"))
 				if err != nil {
 					log.Println("write exit ", err)
 					return
