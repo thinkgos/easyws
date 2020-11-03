@@ -12,7 +12,7 @@ import (
 var (
 	ErrHubClosed       = errors.New("ws: hub is closed")
 	ErrSessionNotFound = errors.New("ws: session not found")
-	ErrBadmsgType      = errors.New("ws: bad write tMessage type")
+	ErrBadMessageType  = errors.New("ws: bad write tMessage type")
 )
 
 // 广播/组播 消息体
@@ -136,7 +136,7 @@ func (sf *Hub) Run(ctx context.Context) {
 // WriteBroadcast 广播消息 (websocket.TextMessage, websocket.BinaryMessage)
 func (sf *Hub) WriteBroadcast(msgType int, data []byte) error {
 	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
-		return ErrBadmsgType
+		return ErrBadMessageType
 	}
 	select {
 	case sf.tMessage <- &tMessage{true, "", msgType, data}:
@@ -149,7 +149,7 @@ func (sf *Hub) WriteBroadcast(msgType int, data []byte) error {
 // WriteGroup 组播 (websocket.TextMessage, websocket.BinaryMessage)
 func (sf *Hub) WriteGroup(groupID string, msgType int, data []byte) error {
 	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
-		return ErrBadmsgType
+		return ErrBadMessageType
 	}
 	select {
 	case sf.tMessage <- &tMessage{false, groupID, msgType, data}:
@@ -162,7 +162,7 @@ func (sf *Hub) WriteGroup(groupID string, msgType int, data []byte) error {
 // WriteMessage 单播 (websocket.TextMessage, websocket.BinaryMessage)
 func (sf *Hub) WriteMessage(groupID, id string, msgType int, data []byte) error {
 	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
-		return ErrBadmsgType
+		return ErrBadMessageType
 	}
 	select {
 	case <-sf.ctx.Done():

@@ -29,7 +29,7 @@ type Session struct {
 // WriteMessage 写消息 (websocket.TextMessage, websocket.BinaryMessage)
 func (sf *Session) WriteMessage(msgType int, data []byte) error {
 	if !(msgType == websocket.TextMessage || msgType == websocket.BinaryMessage) {
-		return ErrBadmsgType
+		return ErrBadMessageType
 	}
 	sf.outBound <- &message{msgType, data}
 	return nil
