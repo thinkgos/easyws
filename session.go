@@ -41,7 +41,7 @@ func (sf *Session) WriteControl(msgType int, data []byte) error {
 		time.Now().Add(sf.Hub.SessionConfig.WriteTimeout))
 }
 
-// Run
+// Run 运行
 func (sf *Session) Run() {
 	cfg := sf.Hub.SessionConfig
 

@@ -48,6 +48,7 @@ func defaultConfig() config {
 	}
 }
 
+// Option options
 type Option func(hub *Hub)
 
 // WithSessionConfig 设置会话配置
@@ -106,7 +107,7 @@ func WithCloseHandler(f func(sess *Session, code int, text string) error) Option
 	}
 }
 
-// SetReceiveHandler 设置接收回调
+// WithErrorHandler 设置接收回调
 func WithErrorHandler(f func(sess *Session, err error)) Option {
 	return func(hub *Hub) {
 		hub.errorHandler = f

@@ -76,6 +76,7 @@ func (sf *Hub) register(sess *Session) {
 	sf.mu.Unlock()
 }
 
+// UnRegister 注销
 func (sf *Hub) UnRegister(groupID, id string) {
 	sf.mu.Lock()
 	if group, ok := sf.sessions[groupID]; ok {
